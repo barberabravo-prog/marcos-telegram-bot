@@ -22,8 +22,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const oauth2Client = new google.auth.OAuth2(
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
-  `${process.env.VERCEL_URL ? 'https://' + process.env.VERCEL_URL : 'http://localhost:3000'}/oauth/callback`
-);
+'https://marcos-telegram-bot-qtyq.vercel.app/oauth/callback');
 
 if (GOOGLE_REFRESH_TOKEN) {
   oauth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
