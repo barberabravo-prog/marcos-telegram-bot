@@ -3,14 +3,14 @@ const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-app.use(express.json()); 
+app.use(express.json());
 
 // ============ CONFIGURACIÓN ============
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -47,19 +47,26 @@ Si solo menciona hora sin fecha, usa hoy.
 Si no menciona fecha ni hora, usa null.`;
 
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      'https://api.groq.com/openai/v1/chat/completions',
       {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { maxOutputTokens: 500, temperature: 0.1 },
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 500,
+        temperature: 0.1,
+        messages: [{ role: 'user', content: prompt }],
       },
-      { headers: { 'Content-Type': 'application/json' } }
+      {
+        headers: {
+          'Authorization': `Bearer ${GROQ_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      }
     );
 
-    const content = response.data.candidates[0].content.parts[0].text.trim();
+    const content = response.data.choices[0].message.content.trim();
     const clean = content.replace(/```json|```/g, '').trim();
     return JSON.parse(clean);
   } catch (error) {
-    console.error('Error processing with Gemini:', error.response?.data || error.message);
+    console.error('Error processing with Groq:', error.response?.data || error.message);
     return null;
   }
 }
@@ -183,8 +190,8 @@ app.get('/status', (req, res) => {
     status: 'Bot operativo',
     telegram: TELEGRAM_TOKEN ? '✅' : '❌',
     supabase: SUPABASE_URL ? '✅' : '❌',
-    gemini: GEMINI_API_KEY ? '✅' : '❌',
-    model: 'gemini-2.0-flash',
+    groq: GROQ_API_KEY ? '✅' : '❌',
+    model: 'llama-3.3-70b-versatile',
     timestamp: new Date().toISOString(),
   });
 });
