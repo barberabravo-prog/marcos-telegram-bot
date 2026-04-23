@@ -10,7 +10,7 @@ app.use(express.json());
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -30,15 +30,7 @@ async function sendTelegramMessage(chatId, text, parseMode = 'HTML') {
 
 async function processWithClaude(userMessage) {
   try {
-    const response = await axios.post(
-      'https://api.anthropic.com/v1/messages',
-      {
-        model: 'claude-sonnet-4-6',
-        max_tokens: 500,
-        messages: [
-          {
-            role: 'user',
-            content: `Eres un asistente para organizar tareas. El usuario te dice: "${userMessage}"
+    const prompt = `Eres un asistente para organizar tareas. El usuario te dice: "${userMessage}"
 
 Extrae y responde ÚNICAMENTE con un JSON válido, sin texto adicional, sin bloques de código:
 {
@@ -52,25 +44,22 @@ Extrae y responde ÚNICAMENTE con un JSON válido, sin texto adicional, sin bloq
 Fecha actual: ${new Date().toISOString()}
 Si el usuario dice "mañana", calcula la fecha correcta.
 Si solo menciona hora sin fecha, usa hoy.
-Si no menciona fecha ni hora, usa null.`,
-          },
-        ],
-      },
+Si no menciona fecha ni hora, usa null.`;
+
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
-        headers: {
-          'x-api-key': CLAUDE_API_KEY,
-          'anthropic-version': '2024-06-01',
-          'Content-Type': 'application/json',
-        },
-      }
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 500, temperature: 0.1 },
+      },
+      { headers: { 'Content-Type': 'application/json' } }
     );
 
-    const content = response.data.content[0].text.trim();
-    // Limpiar por si Claude añade backticks
+    const content = response.data.candidates[0].content.parts[0].text.trim();
     const clean = content.replace(/```json|```/g, '').trim();
     return JSON.parse(clean);
   } catch (error) {
-    console.error('Error processing with Claude:', error.response?.data || error.message);
+    console.error('Error processing with Gemini:', error.response?.data || error.message);
     return null;
   }
 }
@@ -194,8 +183,8 @@ app.get('/status', (req, res) => {
     status: 'Bot operativo',
     telegram: TELEGRAM_TOKEN ? '✅' : '❌',
     supabase: SUPABASE_URL ? '✅' : '❌',
-    claude: CLAUDE_API_KEY ? '✅' : '❌',
-    model: 'claude-sonnet-4-6',
+    gemini: GEMINI_API_KEY ? '✅' : '❌',
+    model: 'gemini-2.0-flash',
     timestamp: new Date().toISOString(),
   });
 });
