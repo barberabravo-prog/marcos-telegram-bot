@@ -28,23 +28,48 @@ async function sendTelegramMessage(chatId, text, parseMode = 'HTML') {
   }
 }
 
-async function processWithClaude(userMessage) {
-  try {
-    const prompt = `Eres un asistente para organizar tareas. El usuario te dice: "${userMessage}"
-
-Extrae y responde ÚNICAMENTE con un JSON válido, sin texto adicional, sin bloques de código:
-{
-  "titulo": "nombre corto de la tarea",
-  "descripcion": "detalles",
-  "prioridad": "ALTA|MEDIA|BAJA",
-  "fecha_vencimiento": "2026-04-23T10:00:00Z o null",
-  "resumen_respuesta": "confirmación breve para enviar al usuario"
+function formatFechaMadrid(fechaUTC) {
+  return new Date(fechaUTC).toLocaleString('es-ES', {
+    timeZone: 'Europe/Madrid',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
-Fecha actual: ${new Date().toISOString()}
-Si el usuario dice "mañana", calcula la fecha correcta.
-Si solo menciona hora sin fecha, usa hoy.
-Si no menciona fecha ni hora, usa null.`;
+async function processWithGroq(userMessage) {
+  try {
+    const now = new Date();
+
+    // Calcular offset de Madrid dinámicamente (CEST=+2 en verano, CET=+1 en invierno)
+    const madridDate = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Madrid' }));
+    const utcDate = new Date(now.toLocaleString('en-US', { timeZone: 'UTC' }));
+    const offsetHours = (madridDate - utcDate) / (1000 * 60 * 60);
+    const offsetStr = `UTC+${offsetHours}`;
+
+    const madridNow = now.toLocaleString('es-ES', {
+      timeZone: 'Europe/Madrid',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+
+    const prompt = `Eres un asistente para organizar tareas. El usuario está en Madrid, España (${offsetStr}).
+
+Hora actual en Madrid: ${madridNow}
+Hora actual UTC: ${now.toISOString()}
+
+El usuario dice: "${userMessage}"
+
+Responde ÚNICAMENTE con un JSON válido, sin texto adicional ni bloques de código:
+{
+  "titulo": "nombre corto de la tarea",
+  "descripcion": "detalles adicionales o cadena vacía",
+  "prioridad": "ALTA o MEDIA o BAJA",
+  "fecha_vencimiento": "ISO 8601 en UTC. IMPORTANTE: si el usuario dice una hora local (ej: 16:30), debes restarle ${offsetHours} horas para convertir a UTC (ej: 16:30 Madrid = ${16 - offsetHours}:30 UTC). Si no menciona fecha ni hora usa null.",
+  "resumen_respuesta": "confirmación breve mostrando la hora en hora Madrid, no UTC"
+}`;
 
     const response = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
@@ -83,7 +108,6 @@ async function saveToDB(task, chatId) {
         chat_id: chatId,
       },
     ]);
-
     if (error) throw error;
     return data;
   } catch (error) {
@@ -97,10 +121,7 @@ async function saveToDB(task, chatId) {
 app.post('/webhook/telegram', async (req, res) => {
   try {
     const { message } = req.body;
-
-    if (!message) {
-      return res.status(200).json({ ok: true });
-    }
+    if (!message) return res.status(200).json({ ok: true });
 
     const chatId = message.chat.id;
     let userMessage = '';
@@ -108,55 +129,106 @@ app.post('/webhook/telegram', async (req, res) => {
     if (message.text) {
       userMessage = message.text;
     } else if (message.voice) {
-      await sendTelegramMessage(chatId, '🎙️ Audio recibido, pero por ahora solo proceso texto. Escríbelo y lo guardo.');
+      await sendTelegramMessage(chatId, '🎙️ Por ahora solo proceso texto. Escríbelo y lo guardo.');
       return res.status(200).json({ ok: true });
     } else {
       return res.status(200).json({ ok: true });
     }
 
-    // Ignorar comandos de sistema
+    // Comandos /start y /help
     if (userMessage.startsWith('/start') || userMessage.startsWith('/help')) {
-      await sendTelegramMessage(chatId, '👋 <b>BravoBarbera Task Bot</b>\n\nEscríbeme una tarea en lenguaje natural y la guardo:\n\n<i>"Llamar al cliente mañana a las 10"</i>\n<i>"Entregar proyecto antes del viernes, urgente"</i>');
+      await sendTelegramMessage(chatId,
+        '👋 <b>BravoBarbera Task Bot</b>\n\n' +
+        'Escríbeme una tarea en lenguaje natural:\n' +
+        '<i>"Llamar al cliente mañana a las 10"</i>\n' +
+        '<i>"Entregar proyecto el viernes, urgente"</i>\n\n' +
+        'Comandos:\n' +
+        '• <b>lista</b> → ver tareas pendientes\n' +
+        '• <b>hecho N</b> → marcar tarea N como completada'
+      );
       return res.status(200).json({ ok: true });
     }
 
-    // Procesar con Claude
-    const processed = await processWithClaude(userMessage);
+    const msgLower = userMessage.trim().toLowerCase();
+
+    // Comando: lista de tareas pendientes
+    if (msgLower === 'lista' || msgLower === 'tareas') {
+      const { data: tareas } = await supabase
+        .from('tareas')
+        .select('*')
+        .eq('completada', false)
+        .eq('chat_id', chatId)
+        .order('fecha_vencimiento', { ascending: true, nullsFirst: false });
+
+      if (!tareas || tareas.length === 0) {
+        await sendTelegramMessage(chatId, '✅ No tienes tareas pendientes.');
+        return res.status(200).json({ ok: true });
+      }
+
+      const lineas = tareas.map((t, i) => {
+        const emoji = { ALTA: '🔴', MEDIA: '🟡', BAJA: '🟢' }[t.prioridad] || '⚪';
+        const fecha = t.fecha_vencimiento ? `📅 ${formatFechaMadrid(t.fecha_vencimiento)}` : '📅 Sin fecha';
+        return `${i + 1}. ${emoji} <b>${t.titulo}</b>\n   ${fecha}`;
+      });
+
+      await sendTelegramMessage(chatId,
+        `📋 <b>Tareas pendientes:</b>\n\n${lineas.join('\n\n')}\n\nEscribe <b>hecho N</b> para marcar una como completada.`
+      );
+      return res.status(200).json({ ok: true });
+    }
+
+    // Comando: marcar tarea como completada
+    const hechoMatch = msgLower.match(/^hecho\s+(\d+)$/);
+    if (hechoMatch) {
+      const index = parseInt(hechoMatch[1]) - 1;
+      const { data: tareas } = await supabase
+        .from('tareas')
+        .select('*')
+        .eq('completada', false)
+        .eq('chat_id', chatId)
+        .order('fecha_vencimiento', { ascending: true, nullsFirst: false });
+
+      if (!tareas || index < 0 || index >= tareas.length) {
+        await sendTelegramMessage(chatId, '❌ Número no válido. Escribe <b>lista</b> para ver tus tareas.');
+        return res.status(200).json({ ok: true });
+      }
+
+      const tarea = tareas[index];
+      await supabase.from('tareas').update({ completada: true }).eq('id', tarea.id);
+      await sendTelegramMessage(chatId, `✅ <b>${tarea.titulo}</b> marcada como completada.`);
+      return res.status(200).json({ ok: true });
+    }
+
+    // Procesar tarea nueva con Groq
+    const processed = await processWithGroq(userMessage);
     if (!processed) {
       await sendTelegramMessage(chatId, '❌ Error procesando tu mensaje. Intenta de nuevo.');
       return res.status(200).json({ ok: true });
     }
 
-    // Guardar en Supabase
     await saveToDB(processed, chatId);
 
-    // Responder al usuario
     const emoji = { ALTA: '🔴', MEDIA: '🟡', BAJA: '🟢' }[processed.prioridad] || '⚪';
-
     const responseText = [
       `✅ ${processed.resumen_respuesta}`,
       '',
       `📌 <b>${processed.titulo}</b>`,
       `Prioridad: ${emoji} ${processed.prioridad}`,
-      processed.fecha_vencimiento
-        ? `📅 ${new Date(processed.fecha_vencimiento).toLocaleString('es-ES', { timeZone: 'Europe/Madrid' })}`
-        : '',
+      processed.fecha_vencimiento ? `📅 ${formatFechaMadrid(processed.fecha_vencimiento)}` : '',
       processed.descripcion ? `📝 ${processed.descripcion}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
+    ].filter(Boolean).join('\n');
 
     await sendTelegramMessage(chatId, responseText);
     return res.status(200).json({ ok: true });
+
   } catch (error) {
     console.error('Webhook error:', error.message);
-    return res.status(200).json({ ok: true }); // Siempre 200 a Telegram
+    return res.status(200).json({ ok: true });
   }
 });
 
 // ============ CRON ENDPOINTS ============
 
-// Seguridad compartida para cron endpoints
 function checkCronAuth(req, res) {
   const authHeader = req.headers.authorization;
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -166,10 +238,9 @@ function checkCronAuth(req, res) {
   return true;
 }
 
-// Recordatorios de tareas vencidas (cada 30min)
+// Recordatorios de tareas vencidas
 app.get('/cron/reminders', async (req, res) => {
   if (!checkCronAuth(req, res)) return;
-
   try {
     const { data: tareas } = await supabase
       .from('tareas')
@@ -179,8 +250,8 @@ app.get('/cron/reminders', async (req, res) => {
       .not('fecha_vencimiento', 'is', null);
 
     for (const tarea of tareas || []) {
-      const reminderText = `⏰ <b>RECORDATORIO</b>\n\n📌 ${tarea.titulo}${tarea.descripcion ? `\n📝 ${tarea.descripcion}` : ''}`;
-      await sendTelegramMessage(tarea.chat_id, reminderText);
+      const texto = `⏰ <b>RECORDATORIO</b>\n\n📌 ${tarea.titulo}${tarea.descripcion ? `\n📝 ${tarea.descripcion}` : ''}\n📅 ${formatFechaMadrid(tarea.fecha_vencimiento)}`;
+      await sendTelegramMessage(tarea.chat_id, texto);
     }
 
     res.json({ ok: true, processed: tareas?.length || 0 });
@@ -190,10 +261,9 @@ app.get('/cron/reminders', async (req, res) => {
   }
 });
 
-// Resumen diario de tareas pendientes (cada mañana a las 9:00)
+// Resumen diario a las 9:30
 app.get('/cron/daily-summary', async (req, res) => {
   if (!checkCronAuth(req, res)) return;
-
   try {
     const { data: tareas } = await supabase
       .from('tareas')
@@ -202,11 +272,9 @@ app.get('/cron/daily-summary', async (req, res) => {
       .order('fecha_vencimiento', { ascending: true, nullsFirst: false });
 
     if (!tareas || tareas.length === 0) {
-      // No hay tareas pendientes, no enviamos nada
       return res.json({ ok: true, processed: 0 });
     }
 
-    // Agrupar por chat_id por si hubiera varios usuarios
     const porChat = {};
     for (const tarea of tareas) {
       if (!porChat[tarea.chat_id]) porChat[tarea.chat_id] = [];
@@ -214,19 +282,12 @@ app.get('/cron/daily-summary', async (req, res) => {
     }
 
     for (const [chatId, listaTareas] of Object.entries(porChat)) {
-      const hoy = new Date();
-      hoy.setHours(0, 0, 0, 0);
-
       const lineas = listaTareas.map(t => {
         const emoji = { ALTA: '🔴', MEDIA: '🟡', BAJA: '🟢' }[t.prioridad] || '⚪';
-        const fecha = t.fecha_vencimiento
-          ? `📅 ${new Date(t.fecha_vencimiento).toLocaleString('es-ES', { timeZone: 'Europe/Madrid', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
-          : '📅 Sin fecha';
+        const fecha = t.fecha_vencimiento ? `📅 ${formatFechaMadrid(t.fecha_vencimiento)}` : '📅 Sin fecha';
         return `${emoji} <b>${t.titulo}</b>\n   ${fecha}`;
       });
-
-      const mensaje = `☀️ <b>Buenos días. Tus tareas pendientes:</b>\n\n${lineas.join('\n\n')}`;
-      await sendTelegramMessage(chatId, mensaje);
+      await sendTelegramMessage(chatId, `☀️ <b>Buenos días. Tareas pendientes:</b>\n\n${lineas.join('\n\n')}`);
     }
 
     res.json({ ok: true, processed: tareas.length });
@@ -252,15 +313,14 @@ app.get('/status', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     bot: 'BravoBarbera Task Bot',
-    version: '2.0',
+    version: '3.0',
     endpoints: {
       webhook: 'POST /webhook/telegram',
       status: 'GET /status',
-      cron: 'GET /cron/reminders',
+      reminders: 'GET /cron/reminders',
+      summary: 'GET /cron/daily-summary',
     },
   });
 });
 
-// ============ EXPORT PARA VERCEL ============
-// Vercel no usa app.listen() — exporta el handler directamente
 module.exports = app;
