@@ -1,33 +1,21 @@
 {
   "name": "marcos-telegram-bot",
-  "version": "1.0.0",
-  "description": "Telegram bot for task management with Claude, Supabase, and Google Calendar",
+  "version": "2.0.0",
+  "description": "Telegram bot for task management with Claude and Supabase",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js"
   },
-  "keywords": [
-    "telegram",
-    "bot",
-    "claude",
-    "supabase",
-    "google-calendar"
-  ],
-  "author": "Marcos BravoBarbera",
-  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "axios": "^1.6.0",
-    "@supabase/supabase-js": "^2.38.0",
-    "google-auth-library": "^9.4.0",
-    "dotenv": "^16.3.1",
-    "node-cron": "^3.0.2"
+    "@supabase/supabase-js": "^2.38.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
   "engines": {
-    "node": "20.x"
+    "node": "18.x"
   }
 }
