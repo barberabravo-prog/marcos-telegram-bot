@@ -22,7 +22,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const oauth2Client = new google.auth.OAuth2(
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
-'https://marcos-telegram-bot-qtyq.vercel.app/oauth/callback');
+  `${process.env.VERCEL_URL ? 'https://' + process.env.VERCEL_URL : 'http://localhost:3000'}/oauth/callback`
+);
 
 if (GOOGLE_REFRESH_TOKEN) {
   oauth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
@@ -61,7 +62,7 @@ async function transcribeAudio(fileId) {
 async function processWithClaude(userMessage) {
   try {
     const response = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-3-5-sonnet-20241022',
+      model: 'claude-sonnet-4-6',
       max_tokens: 500,
       messages: [
         {
@@ -83,7 +84,7 @@ IMPORTANTE: La fecha debe ser en ISO 8601. Si el usuario dice "mañana", calcula
     }, {
       headers: {
         'x-api-key': CLAUDE_API_KEY,
-        'anthropic-version': '2023-06-01',
+        'anthropic-version': '2024-06-01',
       },
     });
 
@@ -273,6 +274,40 @@ cron.schedule('*/30 * * * *', async () => {
     }
   } catch (error) {
     console.error('Cron job error:', error);
+  }
+});
+
+// ============ RESUMEN DIARIO ============
+
+// Resumen diario a las 9:30 CEST
+cron.schedule('30 9 * * *', async () => {
+  try {
+    const { data: tareas } = await supabase
+      .from('tareas')
+      .select('*')
+      .eq('completada', false);
+
+    if (!tareas || tareas.length === 0) {
+      // Si hay usuarios, enviar mensaje de que no hay tareas
+      // Por ahora solo para usuarios con tareas
+      return;
+    }
+
+    let resumen = '📋 TAREAS PENDIENTES HOY:\n\n';
+    for (const tarea of tareas) {
+      resumen += `${tarea.prioridad === 'ALTA' ? '🔴' : tarea.prioridad === 'MEDIA' ? '🟡' : '🟢'} ${tarea.titulo}\n`;
+      if (tarea.fecha_vencimiento) {
+        resumen += `   📅 ${new Date(tarea.fecha_vencimiento).toLocaleString('es-ES')}\n`;
+      }
+    }
+
+    // Enviar a todos los usuarios con tareas
+    const chatsUnicos = [...new Set(tareas.map(t => t.chat_id))];
+    for (const chatId of chatsUnicos) {
+      await sendTelegramMessage(chatId, resumen);
+    }
+  } catch (error) {
+    console.error('Cron diario error:', error);
   }
 });
 
