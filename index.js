@@ -2,7 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 
-const app = express(); 
+const app = express();
 app.use(express.json());
 
 // ============ CONFIGURACIÓN ============
@@ -154,14 +154,21 @@ app.post('/webhook/telegram', async (req, res) => {
   }
 });
 
-// ============ CRON ENDPOINT (llamar desde Vercel Cron) ============
+// ============ CRON ENDPOINTS ============
 
-app.get('/cron/reminders', async (req, res) => {
-  // Seguridad básica: solo desde Vercel Cron
+// Seguridad compartida para cron endpoints
+function checkCronAuth(req, res) {
   const authHeader = req.headers.authorization;
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return res.status(401).json({ error: 'Unauthorized' });
+    res.status(401).json({ error: 'Unauthorized' });
+    return false;
   }
+  return true;
+}
+
+// Recordatorios de tareas vencidas (cada 30min)
+app.get('/cron/reminders', async (req, res) => {
+  if (!checkCronAuth(req, res)) return;
 
   try {
     const { data: tareas } = await supabase
@@ -178,7 +185,53 @@ app.get('/cron/reminders', async (req, res) => {
 
     res.json({ ok: true, processed: tareas?.length || 0 });
   } catch (error) {
-    console.error('Cron error:', error.message);
+    console.error('Cron reminders error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Resumen diario de tareas pendientes (cada mañana a las 9:00)
+app.get('/cron/daily-summary', async (req, res) => {
+  if (!checkCronAuth(req, res)) return;
+
+  try {
+    const { data: tareas } = await supabase
+      .from('tareas')
+      .select('*')
+      .eq('completada', false)
+      .order('fecha_vencimiento', { ascending: true, nullsFirst: false });
+
+    if (!tareas || tareas.length === 0) {
+      // No hay tareas pendientes, no enviamos nada
+      return res.json({ ok: true, processed: 0 });
+    }
+
+    // Agrupar por chat_id por si hubiera varios usuarios
+    const porChat = {};
+    for (const tarea of tareas) {
+      if (!porChat[tarea.chat_id]) porChat[tarea.chat_id] = [];
+      porChat[tarea.chat_id].push(tarea);
+    }
+
+    for (const [chatId, listaTareas] of Object.entries(porChat)) {
+      const hoy = new Date();
+      hoy.setHours(0, 0, 0, 0);
+
+      const lineas = listaTareas.map(t => {
+        const emoji = { ALTA: '🔴', MEDIA: '🟡', BAJA: '🟢' }[t.prioridad] || '⚪';
+        const fecha = t.fecha_vencimiento
+          ? `📅 ${new Date(t.fecha_vencimiento).toLocaleString('es-ES', { timeZone: 'Europe/Madrid', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+          : '📅 Sin fecha';
+        return `${emoji} <b>${t.titulo}</b>\n   ${fecha}`;
+      });
+
+      const mensaje = `☀️ <b>Buenos días. Tus tareas pendientes:</b>\n\n${lineas.join('\n\n')}`;
+      await sendTelegramMessage(chatId, mensaje);
+    }
+
+    res.json({ ok: true, processed: tareas.length });
+  } catch (error) {
+    console.error('Cron daily-summary error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
