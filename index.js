@@ -3,7 +3,7 @@ const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-app.use(express.json());
+app.use(express.json()); 
 
 // ============ CONFIGURACIÓN ============
 
