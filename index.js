@@ -10,7 +10,8 @@ app.use(express.json());
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;       // Solo para Whisper (transcripción)
+const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;   // Para interpretar tareas
 const SUMMARY_CHAT_ID = process.env.SUMMARY_CHAT_ID || null;
 const CRON_INTERVAL_MINUTES = 5;
 
@@ -57,36 +58,32 @@ async function transcribeAudio(fileId) {
     const audioResponse = await axios.get(fileUrl, { responseType: 'arraybuffer' });
     const audioBuffer = Buffer.from(audioResponse.data);
 
-    // Usar fetch nativo (Node 18+) con FormData nativo — más fiable con OGG Opus de Telegram
+    const FormData = require('form-data');
     const form = new FormData();
-    form.append('file', new Blob([audioBuffer], { type: 'audio/ogg' }), 'audio.ogg');
-    form.append('model', 'whisper-large-v3-turbo');
+    form.append('file', audioBuffer, { filename: 'audio.ogg', contentType: 'audio/ogg' });
+    form.append('model', 'whisper-large-v3');
     form.append('language', 'es');
-    form.append('response_format', 'json');
 
-    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
-      body: form,
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      console.error('Whisper API error:', err);
-      return null;
-    }
-
-    const data = await response.json();
-    return data.text || null;
+    const transcription = await axios.post(
+      'https://api.groq.com/openai/v1/audio/transcriptions',
+      form,
+      {
+        headers: {
+          'Authorization': `Bearer ${GROQ_API_KEY}`,
+          ...form.getHeaders(),
+        },
+      }
+    );
+    return transcription.data.text || null;
   } catch (error) {
-    console.error('Error transcribing audio:', error.message);
+    console.error('Error transcribing audio:', error.response?.data || error.message);
     return null;
   }
 }
 
-// ============ GROQ — PROCESAMIENTO MULTI-TAREA ============
+// ============ CLAUDE — PROCESAMIENTO MULTI-TAREA ============
 
-async function processWithGroq(userMessage, existingTasks = []) {
+async function processWithClaude(userMessage, existingTasks = []) {
   try {
     const now = new Date();
     const offsetHours = getMadridOffsetHours();
@@ -96,61 +93,64 @@ async function processWithGroq(userMessage, existingTasks = []) {
       hour: '2-digit', minute: '2-digit', hour12: false,
     });
 
-    const isSummary = existingTasks.length > 0 && /termin|hice|hoy|complet|entregu|llamé|envié|acab|ya |hech/i.test(userMessage);
+    const isSummary = existingTasks.length > 0 &&
+      /termin|hice|hoy|complet|entregu|llamé|envié|acab|ya |hech/i.test(userMessage);
 
     let prompt;
 
     if (isSummary) {
-      const taskListText = existingTasks.map(t =>
-        `ID:${t.id} | ${t.titulo}`
-      ).join('\n');
-
+      const taskListText = existingTasks.map(t => `ID:${t.id} | ${t.titulo}`).join('\n');
       prompt = `Fecha/hora Madrid: ${madridNow} (UTC+${offsetHours})
 
-Tareas pendientes:
+Tareas pendientes en la base de datos:
 ${taskListText}
 
-Mensaje: "${userMessage}"
+El usuario dice: "${userMessage}"
 
-Devuelve SOLO un JSON array. Cada item es una tarea nueva o una completada:
-[{"tipo":"nueva","titulo":"...","descripcion":"...","prioridad":"ALTA|MEDIA|BAJA","fecha_vencimiento":"ISO UTC o null"},{"tipo":"completada","tarea_id":"ID exacto o null","titulo":"..."}]
+Devuelve ÚNICAMENTE un JSON array válido, sin texto adicional:
+[
+  {"tipo":"nueva","titulo":"nombre corto","descripcion":"detalles o cadena vacía","prioridad":"ALTA|MEDIA|BAJA","fecha_vencimiento":"ISO 8601 UTC o null"},
+  {"tipo":"completada","tarea_id":"ID exacto de la lista o null","titulo":"nombre de la tarea"}
+]
 
-- "nueva": algo que tiene que hacer
-- "completada": algo que ya hizo (busca el ID en la lista)
-- Horas locales: restar ${offsetHours}h para UTC`;
+Reglas:
+- "nueva": algo pendiente de hacer
+- "completada": algo que el usuario menciona que ya hizo — busca el ID en la lista
+- Las horas que diga el usuario son en Madrid: réstale ${offsetHours}h para convertir a UTC
+- Si no menciona fecha → fecha_vencimiento: null`;
     } else {
       prompt = `Fecha/hora Madrid: ${madridNow} (UTC+${offsetHours})
 
-Mensaje: "${userMessage}"
+El usuario dice: "${userMessage}"
 
-Devuelve SOLO un JSON array con la tarea:
-[{"tipo":"nueva","titulo":"nombre corto","descripcion":"detalles o vacío","prioridad":"ALTA|MEDIA|BAJA","fecha_vencimiento":"ISO UTC o null"}]
+Devuelve ÚNICAMENTE un JSON array válido, sin texto adicional:
+[{"tipo":"nueva","titulo":"nombre corto de la tarea","descripcion":"detalles o cadena vacía","prioridad":"ALTA|MEDIA|BAJA","fecha_vencimiento":"ISO 8601 UTC o null"}]
 
-Horas locales: restar ${offsetHours}h para UTC. Sin fecha → null.`;
+Las horas que diga el usuario son en Madrid: réstale ${offsetHours}h para UTC. Sin fecha → null.`;
     }
 
     const response = await axios.post(
-      'https://api.groq.com/openai/v1/chat/completions',
+      'https://api.anthropic.com/v1/messages',
       {
-        model: 'llama-3.3-70b-versatile',
-        max_tokens: 1000,
-        temperature: 0.1,
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 1024,
         messages: [{ role: 'user', content: prompt }],
       },
       {
         headers: {
-          'Authorization': `Bearer ${GROQ_API_KEY}`,
+          'x-api-key': CLAUDE_API_KEY,
+          'anthropic-version': '2023-06-01',
           'Content-Type': 'application/json',
         },
       }
     );
 
-    const content = response.data.choices[0].message.content.trim();
+    const content = response.data.content[0].text.trim();
     const clean = content.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
     return Array.isArray(parsed) ? parsed : [parsed];
   } catch (error) {
-    console.error('Error processing with Groq:', error.response?.data || error.message);
+    console.error('Error processing with Claude:', error.response?.data || error.message);
     return null;
   }
 }
@@ -298,8 +298,8 @@ app.post('/webhook/telegram', async (req, res) => {
       .eq('completada', false)
       .eq('chat_id', chatId);
 
-    // Procesar con Groq (multi-tarea)
-    const results = await processWithGroq(userMessage, existingTasks || []);
+    // Procesar con Claude (multi-tarea)
+    const results = await processWithClaude(userMessage, existingTasks || []);
     if (!results) {
       await sendTelegramMessage(chatId, '❌ Error procesando tu mensaje. Intenta de nuevo.');
       return res.status(200).json({ ok: true });
@@ -451,9 +451,10 @@ app.get('/status', (req, res) => {
     status: 'Bot operativo',
     telegram: TELEGRAM_TOKEN ? '✅' : '❌',
     supabase: SUPABASE_URL ? '✅' : '❌',
-    groq: GROQ_API_KEY ? '✅' : '❌',
+    groq_whisper: GROQ_API_KEY ? '✅' : '❌',
+    claude: CLAUDE_API_KEY ? '✅' : '❌',
     summary_group: SUMMARY_CHAT_ID ? '✅' : '⏳ no configurado',
-    model: 'llama-3.3-70b-versatile',
+    model: 'claude-haiku-4-5-20251001',
     timestamp: new Date().toISOString(),
   });
 });
