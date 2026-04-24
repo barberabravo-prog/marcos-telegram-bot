@@ -61,7 +61,7 @@ async function transcribeAudio(fileId) {
 
     const FormData = require('form-data');
     const form = new FormData();
-    form.append('file', audioBuffer, { filename: 'audio.ogg', contentType: 'audio/ogg' });
+    form.append('file', audioBuffer, { filename: 'audio.opus', contentType: 'audio/opus' });
     form.append('model', 'whisper-large-v3');
     form.append('language', 'es');
 
