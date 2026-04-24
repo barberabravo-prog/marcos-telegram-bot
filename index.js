@@ -10,8 +10,9 @@ app.use(express.json());
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;       // Solo para Whisper (transcripción)
-const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;   // Para interpretar tareas
+const GROQ_API_KEY = process.env.GROQ_API_KEY;           // Ya no se usa
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;   // Transcripción de audio
+const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;       // Interpretación de tareas
 const SUMMARY_CHAT_ID = process.env.SUMMARY_CHAT_ID || null;
 const CRON_INTERVAL_MINUTES = 5;
 
@@ -53,27 +54,20 @@ async function transcribeAudio(fileId) {
     const fileInfo = await axios.get(
       `https://api.telegram.org/bot${TELEGRAM_TOKEN}/getFile?file_id=${fileId}`
     );
-    const filePath = fileInfo.data.result.file_path;
-    const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`;
-    const audioResponse = await axios.get(fileUrl, { responseType: 'arraybuffer' });
-    const audioBuffer = Buffer.from(audioResponse.data);
-    const FormData = require('form-data');
-    const form = new FormData();
-    form.append('file', audioBuffer, { filename: 'audio.ogg', contentType: 'audio/ogg' });
-    form.append('model', 'whisper-large-v3');
-    form.append('language', 'es');
+    const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${fileInfo.data.result.file_path}`;
 
-    const transcription = await axios.post(
-      'https://api.groq.com/openai/v1/audio/transcriptions',
-      form,
+    const response = await axios.post(
+      'https://api.deepgram.com/v1/listen?model=nova-2&language=es&smart_format=true',
+      { url: fileUrl },
       {
         headers: {
-          'Authorization': `Bearer ${GROQ_API_KEY}`,
-          ...form.getHeaders(),
+          'Authorization': `Token ${DEEPGRAM_API_KEY}`,
+          'Content-Type': 'application/json',
         },
       }
     );
-    return transcription.data.text || null;
+
+    return response.data.results.channels[0].alternatives[0].transcript || null;
   } catch (error) {
     console.error('Error transcribing audio:', error.response?.data || error.message);
     return null;
@@ -450,7 +444,7 @@ app.get('/status', (req, res) => {
     status: 'Bot operativo',
     telegram: TELEGRAM_TOKEN ? '✅' : '❌',
     supabase: SUPABASE_URL ? '✅' : '❌',
-    groq_whisper: GROQ_API_KEY ? '✅' : '❌',
+    deepgram: DEEPGRAM_API_KEY ? '✅' : '❌',
     claude: CLAUDE_API_KEY ? '✅' : '❌',
     summary_group: SUMMARY_CHAT_ID ? '✅' : '⏳ no configurado',
     model: 'claude-haiku-4-5-20251001',
