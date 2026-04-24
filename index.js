@@ -57,6 +57,7 @@ async function transcribeAudio(fileId) {
     const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`;
     const audioResponse = await axios.get(fileUrl, { responseType: 'arraybuffer' });
     const audioBuffer = Buffer.from(audioResponse.data);
+    console.log(`Audio descargado: ${audioBuffer.length} bytes, fileUrl: ${fileUrl}`);
 
     const FormData = require('form-data');
     const form = new FormData();
