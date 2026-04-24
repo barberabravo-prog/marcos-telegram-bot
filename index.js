@@ -92,48 +92,38 @@ async function processWithGroq(userMessage, existingTasks = []) {
       hour: '2-digit', minute: '2-digit', hour12: false,
     });
 
-    const taskListText = existingTasks.length > 0
-      ? existingTasks.map(t =>
-          `- ID:${t.id} | "${t.titulo}"${t.descripcion ? ` (${t.descripcion})` : ''}`
-        ).join('\n')
-      : '(sin tareas pendientes)';
+    const isSummary = existingTasks.length > 0 && /termin|hice|hoy|complet|entregu|llamé|envié|acab|ya |hech/i.test(userMessage);
 
-    const prompt = `Eres un asistente de gestión de tareas para un diseñador gráfico freelance en Valencia, España.
+    let prompt;
 
-Hora actual en Madrid: ${madridNow}
-Hora UTC: ${now.toISOString()}
-Offset Madrid/UTC: +${offsetHours}h
+    if (isSummary) {
+      const taskListText = existingTasks.map(t =>
+        `ID:${t.id} | ${t.titulo}`
+      ).join('\n');
 
-Tareas pendientes en base de datos:
+      prompt = `Fecha/hora Madrid: ${madridNow} (UTC+${offsetHours})
+
+Tareas pendientes:
 ${taskListText}
 
-El usuario dice: "${userMessage}"
+Mensaje: "${userMessage}"
 
-Analiza el mensaje y extrae TODAS las acciones mencionadas. Devuelve ÚNICAMENTE un JSON array válido, sin texto adicional ni bloques de código.
+Devuelve SOLO un JSON array. Cada item es una tarea nueva o una completada:
+[{"tipo":"nueva","titulo":"...","descripcion":"...","prioridad":"ALTA|MEDIA|BAJA","fecha_vencimiento":"ISO UTC o null"},{"tipo":"completada","tarea_id":"ID exacto o null","titulo":"..."}]
 
-Reglas:
-- Si menciona que hizo, terminó, completó, entregó, llamó, envió algo → tipo "completada", busca el ID en la lista de tareas pendientes
-- Si menciona algo que tiene que hacer, pendiente, para mañana, etc. → tipo "nueva"
-- Un mensaje puede generar múltiples items del array
-- Para "completada": usa el ID exacto de la lista si hay match. Si no hay match claro, pon tarea_id: null
-- Para fechas: si el usuario dice una hora local (ej: 16:30), conviértela a UTC restando ${offsetHours}h
-- Si no menciona fecha ni hora para una tarea nueva, usa fecha_vencimiento: null
+- "nueva": algo que tiene que hacer
+- "completada": algo que ya hizo (busca el ID en la lista)
+- Horas locales: restar ${offsetHours}h para UTC`;
+    } else {
+      prompt = `Fecha/hora Madrid: ${madridNow} (UTC+${offsetHours})
 
-Formato de respuesta:
-[
-  {
-    "tipo": "nueva",
-    "titulo": "nombre corto de la tarea",
-    "descripcion": "detalles o cadena vacía",
-    "prioridad": "ALTA|MEDIA|BAJA",
-    "fecha_vencimiento": "2026-04-24T08:00:00Z o null"
-  },
-  {
-    "tipo": "completada",
-    "tarea_id": "uuid-exacto-de-la-lista-o-null",
-    "titulo": "titulo tal como aparece en la lista"
-  }
-]`;
+Mensaje: "${userMessage}"
+
+Devuelve SOLO un JSON array con la tarea:
+[{"tipo":"nueva","titulo":"nombre corto","descripcion":"detalles o vacío","prioridad":"ALTA|MEDIA|BAJA","fecha_vencimiento":"ISO UTC o null"}]
+
+Horas locales: restar ${offsetHours}h para UTC. Sin fecha → null.`;
+    }
 
     const response = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
