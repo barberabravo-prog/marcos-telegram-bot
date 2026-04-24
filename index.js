@@ -57,25 +57,29 @@ async function transcribeAudio(fileId) {
     const audioResponse = await axios.get(fileUrl, { responseType: 'arraybuffer' });
     const audioBuffer = Buffer.from(audioResponse.data);
 
-    const FormData = require('form-data');
+    // Usar fetch nativo (Node 18+) con FormData nativo — más fiable con OGG Opus de Telegram
     const form = new FormData();
-    form.append('file', audioBuffer, { filename: 'audio.ogg', contentType: 'audio/ogg' });
-    form.append('model', 'whisper-large-v3');
+    form.append('file', new Blob([audioBuffer], { type: 'audio/ogg' }), 'audio.ogg');
+    form.append('model', 'whisper-large-v3-turbo');
     form.append('language', 'es');
+    form.append('response_format', 'json');
 
-    const transcription = await axios.post(
-      'https://api.groq.com/openai/v1/audio/transcriptions',
-      form,
-      {
-        headers: {
-          'Authorization': `Bearer ${GROQ_API_KEY}`,
-          ...form.getHeaders(),
-        },
-      }
-    );
-    return transcription.data.text;
+    const response = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
+      body: form,
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.error('Whisper API error:', err);
+      return null;
+    }
+
+    const data = await response.json();
+    return data.text || null;
   } catch (error) {
-    console.error('Error transcribing audio:', error.response?.data || error.message);
+    console.error('Error transcribing audio:', error.message);
     return null;
   }
 }
