@@ -57,14 +57,11 @@ async function transcribeAudio(fileId) {
     const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`;
     const audioResponse = await axios.get(fileUrl, { responseType: 'arraybuffer' });
     const audioBuffer = Buffer.from(audioResponse.data);
-    console.log(`Audio descargado: ${audioBuffer.length} bytes, fileUrl: ${fileUrl}`);
-
     const FormData = require('form-data');
     const form = new FormData();
     form.append('file', audioBuffer, { filename: 'audio.ogg', contentType: 'audio/ogg' });
-    form.append('model', 'whisper-large-v3-turbo');
+    form.append('model', 'whisper-large-v3');
     form.append('language', 'es');
-    form.append('prompt', 'Tarea, recordatorio, llamar, reunión, enviar, entregar, mañana, lunes.');
 
     const transcription = await axios.post(
       'https://api.groq.com/openai/v1/audio/transcriptions',
