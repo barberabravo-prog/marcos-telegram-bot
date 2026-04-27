@@ -409,14 +409,7 @@ async function getWeather() {
 // ============ CRON ENDPOINTS ============
 
 function checkCronAuth(req, res) {
-  // Si no hay CRON_SECRET configurado, permitir acceso libre
-  if (!process.env.CRON_SECRET) return true;
-  const authHeader = req.headers.authorization;
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return false;
-  }
-  return true;
+  return true; // Sin autenticación — bot personal
 }
 
 // Mensaje de las 9:00 — tiempo + tareas del día
