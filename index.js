@@ -14,6 +14,8 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY;           // Ya no se usa
 const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;   // Transcripción de audio
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;       // Interpretación de tareas
 const SUMMARY_CHAT_ID = process.env.SUMMARY_CHAT_ID || null;
+const WEATHER_LAT = process.env.WEATHER_LAT || '39.47';   // Valencia por defecto
+const WEATHER_LON = process.env.WEATHER_LON || '-0.38';
 const CRON_INTERVAL_MINUTES = 5;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -357,6 +359,53 @@ app.post('/webhook/telegram', async (req, res) => {
   }
 });
 
+// ============ TIEMPO (Open-Meteo) ============
+
+function weatherEmoji(code) {
+  if (code === 0) return '☀️';
+  if (code <= 2) return '🌤️';
+  if (code === 3) return '☁️';
+  if (code <= 48) return '🌫️';
+  if (code <= 55) return '🌦️';
+  if (code <= 65) return '🌧️';
+  if (code <= 75) return '❄️';
+  if (code <= 82) return '🌧️';
+  return '⛈️';
+}
+
+function weatherDesc(code) {
+  if (code === 0) return 'Despejado';
+  if (code === 1) return 'Mayormente despejado';
+  if (code === 2) return 'Parcialmente nublado';
+  if (code === 3) return 'Nublado';
+  if (code <= 48) return 'Niebla';
+  if (code <= 55) return 'Llovizna';
+  if (code <= 65) return 'Lluvia';
+  if (code <= 75) return 'Nieve';
+  if (code <= 82) return 'Chubascos';
+  return 'Tormenta';
+}
+
+async function getWeather() {
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${WEATHER_LAT}&longitude=${WEATHER_LON}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max&hourly=temperature_2m&timezone=Europe/Madrid&forecast_days=1`;
+    const { data } = await axios.get(url);
+
+    const code = data.daily.weathercode[0];
+    const tMax = Math.round(data.daily.temperature_2m_max[0]);
+    const tMin = Math.round(data.daily.temperature_2m_min[0]);
+    const lluvia = data.daily.precipitation_sum[0];
+    const viento = Math.round(data.daily.windspeed_10m_max[0]);
+    const temps = data.hourly.temperature_2m;
+    const tMedia = Math.round(temps.reduce((a, b) => a + b, 0) / temps.length);
+
+    return { code, tMax, tMin, tMedia, lluvia, viento };
+  } catch (error) {
+    console.error('Error getting weather:', error.message);
+    return null;
+  }
+}
+
 // ============ CRON ENDPOINTS ============
 
 function checkCronAuth(req, res) {
@@ -367,6 +416,64 @@ function checkCronAuth(req, res) {
   }
   return true;
 }
+
+// Mensaje de las 9:00 — tiempo + tareas del día
+app.get('/cron/morning', async (req, res) => {
+  if (!checkCronAuth(req, res)) return;
+  try {
+    const [weather, { data: tareas }] = await Promise.all([
+      getWeather(),
+      supabase.from('tareas').select('*').eq('completada', false)
+        .order('fecha_vencimiento', { ascending: true, nullsFirst: false }),
+    ]);
+
+    const lineas = [];
+
+    // Bloque tiempo
+    if (weather) {
+      const emoji = weatherEmoji(weather.code);
+      const desc = weatherDesc(weather.code);
+      lineas.push(`${emoji} <b>${desc}</b>`);
+      lineas.push(`🌡️ Media <b>${weather.tMedia}°C</b>  ·  Máx ${weather.tMax}°C  ·  Mín ${weather.tMin}°C`);
+      if (weather.lluvia > 0) lineas.push(`🌧️ Lluvia: ${weather.lluvia} mm`);
+      if (weather.viento > 30) lineas.push(`💨 Viento: ${weather.viento} km/h`);
+    }
+
+    // Bloque tareas
+    if (tareas && tareas.length > 0) {
+      lineas.push('');
+      lineas.push('📋 <b>Tareas de hoy:</b>');
+      for (const t of tareas) {
+        const e = { ALTA: '🔴', MEDIA: '🟡', BAJA: '🟢' }[t.prioridad] || '⚪';
+        const fecha = t.fecha_vencimiento ? ` · 📅 ${formatFechaMadrid(t.fecha_vencimiento)}` : '';
+        lineas.push(`${e} ${t.titulo}${fecha}`);
+      }
+    } else {
+      lineas.push('');
+      lineas.push('✅ Sin tareas pendientes.');
+    }
+
+    const mensaje = `☀️ <b>Buenos días, Marcos</b>\n\n${lineas.join('\n')}`;
+
+    if (SUMMARY_CHAT_ID) {
+      await sendTelegramMessage(SUMMARY_CHAT_ID, mensaje);
+    } else {
+      const chats = [...new Set((tareas || []).map(t => t.chat_id))];
+      if (chats.length === 0 && SUMMARY_CHAT_ID === null) {
+        // No hay chats conocidos — no hacer nada
+      } else {
+        for (const chatId of chats) {
+          await sendTelegramMessage(chatId, mensaje);
+        }
+      }
+    }
+
+    res.json({ ok: true, tareas: tareas?.length || 0, weather: !!weather });
+  } catch (error) {
+    console.error('Cron morning error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 app.get('/cron/reminders', async (req, res) => {
   if (!checkCronAuth(req, res)) return;
